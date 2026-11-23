@@ -1,0 +1,38 @@
+{
+  "name": "lykia-js",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Lykia JavaScript packages: @lykia/sdk and @lykia/mcp. One Key. Every AI.",
+  "license": "ISC",
+  "type": "module",
+  "workspaces": [
+    "packages/sdk",
+    "packages/mcp"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "eslint .",
+    "test": "npm run build && vitest run",
+    "test:unit": "vitest run",
+    "pack:check": "node scripts/pack-check.mjs",
+    "conformance": "vitest run packages/sdk/test/conformance.test.ts packages/mcp/test/conformance.test.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run pack:check"
+  },
+  "devDependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.94",
+    "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@types/node": "^22.19.0",
+    "ai": "^7.0.179",
+    "eslint": "^10.15.0",
+    "tsdown": "^0.23.7",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.73.0",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}
