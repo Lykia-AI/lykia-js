@@ -100,8 +100,9 @@ tiers, surcharges, note }, providers }` (their token `pricing` is `{}`).
 Media methods take a media model (`author/model`) or a preset of the matching kind (`@image`, `@video`, `@tts`,
 `@stt`); a chat preset there is 400 `preset_modality_mismatch`, a model of the wrong kind 400 `unsupported_model`.
 They accept the tags `user` / `metadata` like every generation. Results and their files are stored by Lykia: links are
-**signed and last about 1 hour**, a new link is signed on every read, and the stored file is kept for **7 days**
-(`expires_at` of a video job). Download what you want to keep.
+**signed and last about 1 hour**, a new link is signed on every read, and the stored file is kept for a retention period
+set by the platform (`mediaOutputRetentionDays`, default 7 days; `expires_at` of a video job is the actual end). Download
+what you want to keep.
 
 ### Images
 
@@ -124,7 +125,8 @@ const b64 = await lykia.images.generate({ model: '@image', prompt: 'logo', respo
 ```
 
 Model-specific settings go in `provider_options` (the model's allow-list in `models.get(id).media.capabilities`;
-others are 400 `unsupported_input` with `error.param` naming the field).
+others are 400 `unsupported_input`; the wire body names the field in `error.metadata.param`, which `LykiaError` exposes
+as `err.param`).
 
 ### Video (asynchronous jobs)
 
@@ -133,7 +135,7 @@ const job = await lykia.videos.create({ model: '@video', prompt: 'waves at dusk'
 // job.id is a generation id (gen-…); status 'queued'
 
 const done = await lykia.videos.wait(job.id, { intervalMs: 5000, timeoutMs: 15 * 60_000, onPoll: (j) => console.log(j.progress) });
-done.output?.url;          // signed link (≈ 1 h, re-signed on every read); done.expires_at: unix seconds (retention, 7 days)
+done.output?.url;          // signed link (≈ 1 h, re-signed on every read); done.expires_at: unix seconds (end of retention; default 7 days, set by the platform)
 done.usage?.cost;          // USD (0 for failed or cancelled jobs)
 
 const { url, expires_at } = await lykia.videos.contentUrl(job.id);   // a fresh signed link (GET …/content?redirect=false)
@@ -151,7 +153,8 @@ the `metadata`), or `code: 'timeout'` (retryable; the job keeps running, call `w
 `video_expired`. A job that completed but whose file could not be retrieved from the provider stays `completed` (and
 billed) with `output: null` and `error: { code: 'video_output_unavailable', reason: 'provider_error', retryable }`;
 `content` / `contentUrl` then answer 502 `video_output_unavailable` (when `retryable` is true, a content read retries
-the copy once). Check `done.output` before using it. Poll every few seconds: each poll is a cheap read, and the server caps a job at 60 minutes.
+the copy once). Check `done.output` before using it. Poll every few seconds: each poll is a cheap read, and the server caps a job's run time (`mediaJobMaxMinutes`, default 60 minutes, set by the
+platform; a job past it fails with `timeout`).
 
 ### Speech and voices
 
@@ -173,11 +176,11 @@ await lykia.audio.voices.delete(clone.id);            // 404 voice_not_found whe
 
 **Voice.** `voice` is optional: without it the gateway uses the preset's default voice (`defaults.voice` of the `@tts`
 preset you call). When neither the request nor the preset gives one, the request is 400 `bad_request`
-(`error.param: 'voice'`).
+(`error.metadata.param: 'voice'`, `err.param === 'voice'`).
 
 **Voice-clone consent.** `consent: true` states that you have the speaker's permission to clone their voice; it is
 written to Lykia's audit log with your key and project. Without it the request is 400 `consent_required`
-(`error.param: 'consent'`). Clones belong to the project of the key that made them.
+(`error.metadata.param: 'consent'`, `err.param === 'consent'`). Clones belong to the project of the key that made them.
 
 ### Transcription
 
@@ -196,7 +199,8 @@ t._meta.ignoredFields;                                // [] unless the gateway i
 **Multipart order.** The gateway streams the upload to the provider as it arrives, so it reads the form fields first
 and the **file must be the last part**. The SDK always sends it last (also for voice clones). If you build the form
 yourself, append `file` after every other field: fields after the file are ignored and listed in the
-`X-Lykia-Ignored-Fields` response header (`_meta.ignoredFields`). Files are limited to 25 MB.
+`X-Lykia-Ignored-Fields` response header (`_meta.ignoredFields`). The file size limit is set by the platform
+(`mediaTranscriptionMaxMb`, default 25 MB); a larger file is 413 `payload_too_large` with `param: 'file'`.
 
 ## Using the Vercel AI SDK
 
@@ -331,7 +335,7 @@ Every failure is a `LykiaError` with:
 | `reason` | stable class from `error.metadata.reason`: `invalid_request`, `unauthorized`, `forbidden`, `context_length_exceeded`, `content_policy`, `rate_limited`, `overloaded`, `timeout`, `provider_auth`, `provider_error`, `no_provider`, `insufficient_credits`, `limit_exceeded`, `unsupported_input` |
 | `retryable` | `true` for `rate_limited`, `overloaded`, `timeout`, `provider_error` and network errors |
 | `retryAfter` | seconds, from `error.metadata.retry_after` or `Retry-After` |
-| `param` | the request field that was rejected (`error.metadata.param`), e.g. `n`, `response_format`, `consent` |
+| `param` | the request field that was rejected, read from the wire's `error.metadata.param` (there is no top-level `error.param`), e.g. `n`, `response_format`, `consent`, `file` |
 | `provider`, `providerCode`, `billedByProvider`, `cost` | provider details of a failed generation (`metadata.provider`, `provider_code`, `billed_by_provider`, `cost`) |
 | `metadata`, `generationId`, `body` | `error.metadata` as sent, request id, parsed body |
 
@@ -356,8 +360,8 @@ Codes you will meet (non-exhaustive; branch on `reason` for classes, on `code` f
 | 404 | `not_found`, `voice_not_found` | unknown generation / video job / voice |
 | 409 | `video_not_ready`, `job_not_cancellable` | content before completion; cancel after a final state |
 | 410 | `video_expired` | the stored video passed its retention period (`expires_at`) |
-| 413 | `payload_too_large` | upload over the limit (25 MB for transcription) |
-| 429 | `rate_limited`, `provider_busy`, `media_queue_full` | rate limit; provider concurrency full (`Retry-After: 5`); too many queued media jobs in the project (`Retry-After: 30`) |
+| 413 | `payload_too_large` | upload over the limit (transcription: `mediaTranscriptionMaxMb`, default 25 MB, set by the platform; `param: 'file'`) |
+| 429 | `rate_limited`, `provider_busy`, `media_queue_full` | rate limit; provider concurrency full (`Retry-After: 5`); too many video jobs waiting for provider capacity in the project (`mediaProjectQueueCap`, default 20): the gateway sends the `Retry-After: 30` header and `error.metadata.retry_after: 30`, so `err.retryAfter === 30` |
 | 502 | `video_output_unavailable` | the video was generated (and billed) but its file could not be retrieved; the job shows `output: null` + `error` |
 | 502 / 503 / 504 | `provider_error`, `no_provider`, `gateway_timeout` | provider failure; no provider available; timeout |
 | – | `video_failed`, `video_cancelled` | thrown by `videos.wait` (status 0; the job in `body`) |
@@ -507,7 +511,7 @@ kırılımı için her üretimde `user` ve `metadata`; maliyet `usage.cost` ve `
 Hatalar `LykiaError` (`status`, `code`, `type`, `reason`, `retryable`, `retryAfter`, `param`, `generationId`).
 Görsel (`images.generate`), video (`videos.create` / `wait` / `content` / `contentUrl` / `list` / `cancel`), ses
 (`audio.speech`, `audio.voices`) ve yazıya dökme (`audio.transcriptions`) yöntemleri gerçek uçlarla uyumludur;
-bağlantılar imzalıdır (yaklaşık 1 saat), dosyalar 7 gün saklanır. Ses klonu için `consent: true` zorunludur; dosya çok
+bağlantılar imzalıdır (yaklaşık 1 saat); dosyaların saklama süresini platform belirler (`mediaOutputRetentionDays`, varsayılan 7 gün). Ses klonu için `consent: true` zorunludur; dosya çok
 parçalı formun son parçası olmalıdır (SDK bunu kendisi yapar). npm olmadan kullanmak için tek dosyalık
 `dist/lykia-client.cjs` projeye kopyalanır; `tsc` bu dosyayı `dist`'e kopyalamaz, `postbuild` ile kopyalayın.
 Testler için `@lykia/sdk/testing` sahte sunucuyu verir.

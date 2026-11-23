@@ -51,7 +51,8 @@ Follows the gateway changes of 2026-11-24. Only one item can change an existing 
   embeddings, images, speech, transcription and video.
 - `chatChunks({ cost })`: shorthand for `usage: fakeUsage({ cost })`.
 - Speech: `voice` falls back to the preset's default voice, set with the new option
-  `presetDefaults: { tts: { voice: '…' } }` (default none); without either, 400 `bad_request` with `param: "voice"`,
+  `presetDefaults: { tts: { voice: '…' } }` (default none); without either, 400 `bad_request` with
+  `error.metadata.param: "voice"`,
   as the gateway. Responses carry `X-Lykia-Model` and `X-Lykia-Provider`.
 - `GET /audio/voices` has a top-level `provider`.
 - Video prompt `#output-unavailable`: the job completes (billed) with `output: null` and
@@ -164,7 +165,8 @@ below). The media methods are no longer marked preview.
 - Models: `kind` / `output_modalities` filters; `Model.kind`, `is_free`, `media`. `models.get()` finds media models.
 - Chat: `cache: 'auto' | 'off'`. Key: `app` for OAuth tokens. Generations: `kind`, `endpoint`, `media`,
   `usage_type: 'internal'`.
-- `LykiaError`: `type`, `metadata`, and the getters `param`, `providerCode`, `billedByProvider`, `cost`.
+- `LykiaError`: `type`, `metadata`, and the getters `param`, `providerCode`, `billedByProvider`, `cost` (read from
+  `error.metadata`; the wire has `error.metadata.param`, no top-level `error.param`).
 - README: media guide (examples, URL lifetime, video polling, the file-last multipart rule, voice-clone consent), the
   error code table (`unsupported_model`, `platform_sales_disabled`, `byok_only_no_key`, `provider_busy`,
   `media_queue_full`, `video_not_ready`, `video_expired`, `job_not_cancellable`, `voice_not_found`,
@@ -180,6 +182,9 @@ below). The media methods are no longer marked preview.
   `?redirect=false`, 409 `video_not_ready` / `job_not_cancellable`, 410, 404), speech (content type per format, 404
   `voice_not_found`), voices (consent, name, 1–25 audio files of ≤ 10 MB) and transcriptions (file order checks).
 - Signed-looking links (`X-Amz-Expires=3600`, a new signature on every read). Multipart parsing with limits.
+- The fake uses the gateway's default settings as fixed values: output retention 7 days (`mediaOutputRetentionDays`),
+  transcription file limit 25 MB (`mediaTranscriptionMaxMb`). On the real gateway these, and the job cap
+  (`mediaJobMaxMinutes`, default 60), are set by the platform; do not hard-code them in an app.
 - Strict validation adds `unsupported_model`, `unsupported_sort`, image `n` / `response_format` with `param`, video and
   speech required fields. Media models in the catalog (`?kind=`, `?output_modalities=`), media presets in the default
   table.
