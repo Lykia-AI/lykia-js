@@ -79,11 +79,17 @@ export interface FakeLykiaOptions {
    * except `search`, which the real gateway does not have yet). Add it with `presets: { ...FAKE_DEFAULT_PRESETS, search: 'chat' }`.
    */
   presets?: Record<string, PresetModality>;
+  /**
+   * Preset defaults by preset name, applied like the gateway (request fields win). Used today for the speech voice:
+   * `presetDefaults: { tts: { voice: 'JBFqnCBsd6RMkjVDRZzb' } }` lets `@tts` requests omit `voice`. Default: none.
+   */
+  presetDefaults?: Record<string, Record<string, unknown>>;
   /** `GET /credits` mode (default `prepaid`). */
   billingMode?: 'prepaid' | 'internal';
   /**
    * Video job clock: a job is `queued` for `queuedMs`, then `in_progress` for `runningMs`, then `completed` (default
-   * 100 / 300 ms). Scripted outcomes by prompt: `#fail` → `failed`, `#expired` → completed but content 410 `video_expired`.
+   * 100 / 300 ms). Scripted outcomes by prompt: `#fail` → `failed`, `#expired` → completed but content 410 `video_expired`,
+   * `#output-unavailable` → completed (and billed) with `output: null` + `error.code: video_output_unavailable`, content 502.
    */
   videoTimeline?: { queuedMs?: number; runningMs?: number };
 }
@@ -213,6 +219,8 @@ export interface ChatChunksOptions {
   toolCalls?: Array<{ id: string; name: string; arguments: string | string[] }>;
   finishReason?: string;
   usage?: Record<string, unknown> | null;
+  /** Shorthand for `usage: fakeUsage({ cost })`: the USD cost of the final usage chunk (ignored when `usage` is given). */
+  cost?: number;
   /** Fail after the content with this error chunk (no usage chunk follows). */
   error?: { message: string; code?: string; type?: string; reason?: string; status?: number };
   /**
@@ -258,7 +266,7 @@ export function chatChunks(o: ChatChunksOptions = {}): Array<Record<string, unkn
     return out;
   }
   out.push(ch({}, o.finishReason ?? (o.toolCalls?.length ? 'tool_calls' : 'stop')));
-  if (o.usage !== null) out.push({ ...base, choices: [], usage: o.usage ?? fakeUsage() });
+  if (o.usage !== null) out.push({ ...base, choices: [], usage: o.usage ?? fakeUsage(o.cost !== undefined ? { cost: o.cost } : {}) });
   return out;
 }
 
@@ -557,6 +565,7 @@ interface Video {
   duration: number;
   fail: boolean;
   expired: boolean;
+  outputUnavailable: boolean;
   cancelledAt?: number;
   failedAt?: number;
 }
@@ -646,7 +655,7 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
     if (endpoint === 'video' && (typeof body['prompt'] !== 'string' || !body['prompt'])) return withParam(bad('`prompt` is required', 'bad_request'), 'prompt');
     if (endpoint === 'speech') {
       if (typeof body['input'] !== 'string' || !body['input']) return withParam(bad('`input` is required', 'bad_request'), 'input');
-      if (typeof body['voice'] !== 'string' || !body['voice']) return withParam(bad('`voice` is required', 'bad_request'), 'voice');
+      if (!speechVoice(body)) return withParam(bad('`voice` is required', 'bad_request'), 'voice');
     }
     if (endpoint === 'transcription') {
       const fmt = fields?.['response_format'];
@@ -710,6 +719,14 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
     '/audio/transcriptions': 'audio.transcriptions',
   };
 
+  /** The request's voice, else the `@preset`'s default voice (like the gateway); `undefined` when neither gives one. */
+  const speechVoice = (body: Record<string, unknown>): string | undefined => {
+    if (typeof body['voice'] === 'string' && body['voice']) return body['voice'];
+    const model = body['model'];
+    const d = typeof model === 'string' && model.startsWith('@') ? options.presetDefaults?.[model.slice(1)]?.['voice'] : undefined;
+    return typeof d === 'string' && d ? d : undefined;
+  };
+
   const record = (req: FakeRequest, status: number, extra: { cost?: number; streamed?: boolean } = {}) => {
     const endpoint = req.method === 'POST' ? ENDPOINT_MODALITY[req.path] : undefined;
     if (!endpoint) return;
@@ -737,7 +754,7 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
       streamed: extra.streamed ?? false,
       status: status < 400 ? 'ok' : 'error',
       http_status: status,
-      cost: status < 400 ? (extra.cost ?? 0.000123) : 0,
+      cost: status < 400 ? (extra.cost ?? 0) : 0,
       kind: endpoint,
     });
   };
@@ -800,8 +817,13 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
       params: { duration: v.duration, image: false, last_frame: false, reference_images: 0 },
       ...(status === 'failed' ? { error: { message: `${v.provider}: internal error`, code: 'provider_error', reason: 'provider_error' } } : {}),
       ...(status === 'cancelled' ? { error: { message: 'The job was cancelled', code: 'cancelled', reason: 'invalid_request' } } : {}),
+      ...(status === 'completed' && v.outputUnavailable
+        ? { error: { message: 'The video was generated, but Lykia could not copy the file from the provider.', code: 'video_output_unavailable', reason: 'provider_error', retryable: false } }
+        : {}),
       ...(final ? { usage: { cost, is_byok: false, cost_details: fakeUsage({ cost }).cost_details } } : {}),
-      ...(status === 'completed' ? { output: { ...signedUrl(`${encodeURIComponent(v.id)}.mp4`), mime_type: 'video/mp4', width: 1280, height: 720, bytes: 9 } } : {}),
+      ...(status === 'completed'
+        ? { output: v.outputUnavailable ? null : { ...signedUrl(`${encodeURIComponent(v.id)}.mp4`), mime_type: 'video/mp4', width: 1280, height: 720, bytes: 9 } }
+        : {}),
     };
   };
 
@@ -1006,7 +1028,7 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
       const model = realModel(body['model'], 'video');
       const prompt = String(body['prompt'] ?? '');
       const duration = Number(body['duration'] ?? body['duration_seconds'] ?? body['seconds'] ?? 5) || 5;
-      const v: Video = { id: generationId, createdAt: Date.now(), model, provider: model.split('/')[0] ?? 'bytedance', duration, fail: /#fail/.test(prompt), expired: /#expired/.test(prompt) };
+      const v: Video = { id: generationId, createdAt: Date.now(), model, provider: model.split('/')[0] ?? 'bytedance', duration, fail: /#fail/.test(prompt), expired: /#expired/.test(prompt), outputUnavailable: /#output-unavailable/.test(prompt) };
       videos.set(v.id, v);
       return { headers: presetHeaders(body['model']), json: videoView(v) };
     }
@@ -1036,6 +1058,11 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
         if (job['status'] !== 'completed') return fakeError(409, { message: `The video is ${String(job['status'])}; content is available once it is completed`, code: 'video_not_ready' });
         const headers = { 'X-Generation-Id': v.id, 'X-Lykia-Cost': String(VIDEO_COST) };
         if (v.expired) return { ...fakeError(410, { message: 'The video file is no longer available', code: 'video_expired' }), headers };
+        if (v.outputUnavailable) {
+          const e = fakeError(502, { message: 'The video was generated, but its file could not be retrieved. The output has not expired (expires_at is still ahead).', code: 'video_output_unavailable', reason: 'provider_error' });
+          (e.json as { error: { metadata: Record<string, unknown> } }).error.metadata['provider'] = v.provider;
+          return { ...e, headers: { ...e.headers, 'X-Generation-Id': v.id } };
+        }
         const signed = signedUrl(`${encodeURIComponent(v.id)}.mp4`);
         if (req.query['redirect'] === 'false') return { headers, json: { url: signed.url, expires_at: signed.expires_at, mime_type: 'video/mp4' } };
         return { status: 302, headers: { ...headers, Location: signed.url } };
@@ -1046,10 +1073,14 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
       const fmt = String(body['response_format'] ?? 'mp3');
       const types: Record<string, string> = { mp3: 'audio/mpeg', opus: 'audio/ogg', aac: 'audio/aac', flac: 'audio/flac', wav: 'audio/wav', pcm: 'audio/pcm' };
       if (!types[fmt]) return fakeError(400, { message: 'response_format must be one of mp3, opus, aac, flac, wav, pcm', code: 'unsupported_input', reason: 'unsupported_input', param: 'response_format' });
-      const voice = String(body['voice'] ?? '');
-      if (voice.startsWith('lvc_') && !voices.has(voice)) return fakeError(404, { message: `Voice ${voice} not found`, code: 'voice_not_found' });
+      const voice = speechVoice(body) ?? '';
+      if (voice.startsWith('lvc_') && !voices.has(voice)) return fakeError(404, { message: `Voice ${voice} not found`, code: 'voice_not_found', param: 'voice' });
       const cost = Math.ceil(String(body['input'] ?? '').length * 80) / 1e6;
-      return { headers: { 'Content-Type': types[fmt]!, 'X-Lykia-Cost': String(cost), ...presetHeaders(body['model']) }, body: 'ID3FAKEAUDIO' };
+      const model = realModel(body['model'], 'speech');
+      return {
+        headers: { 'Content-Type': types[fmt]!, 'X-Lykia-Cost': String(cost), 'X-Lykia-Model': model, 'X-Lykia-Provider': model.split('/')[0] ?? 'elevenlabs', ...presetHeaders(body['model']) },
+        body: 'ID3FAKEAUDIO',
+      };
     }
     if (method === 'GET' && path === '/audio/voices') {
       const model = req.query['model'] ?? DEFAULT_MODEL.speech;
@@ -1057,6 +1088,7 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
         json: {
           object: 'list',
           model,
+          provider: String(model).split('/')[0] ?? 'elevenlabs',
           data: [
             { id: 'JBFqnCBsd6RMkjVDRZzb', object: 'voice', name: 'George', category: 'premade', language: 'en', description: 'Warm', labels: { accent: 'british', language: 'en' }, provider: 'elevenlabs' },
             ...[...voices.values()].filter((x) => x['model'] === model || !req.query['model']),
@@ -1172,8 +1204,8 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
             response = typeof handler === 'function' ? await handler(fakeReq) : handler;
           }
           response ??= defaults(fakeReq);
-          const usageCost = (response.json as { usage?: { cost?: number } } | undefined)?.usage?.cost;
-          record(fakeReq, response.status ?? 200, { streamed: Boolean(response.stream), ...(typeof usageCost === 'number' ? { cost: usageCost } : {}) });
+          const cost = sentCost(response);
+          record(fakeReq, response.status ?? 200, { streamed: Boolean(response.stream), ...(cost !== undefined ? { cost } : {}) });
           await send(req, res, response, fakeReq.generationId);
         } catch (err) {
           await send(req, res, fakeError(500, { message: `Fake handler failed: ${(err as Error).message}` }), fakeReq.generationId);
@@ -1212,6 +1244,39 @@ export async function createFakeLykia(options: FakeLykiaOptions = {}): Promise<F
       });
     },
   };
+}
+
+/**
+ * The cost a response tells the client: `X-Lykia-Cost`, else `usage.cost` of a JSON body, else `usage.cost` of the
+ * last stream event that has one. The generation record stores exactly this, so `fake.generations` agrees with what
+ * the client saw.
+ */
+function sentCost(response: FakeResponse): number | undefined {
+  for (const [k, v] of Object.entries(response.headers ?? {})) {
+    if (k.toLowerCase() === 'x-lykia-cost') {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  const usageCost = (value: unknown): number | undefined => {
+    let v = value;
+    if (typeof v === 'string') {
+      try {
+        v = JSON.parse(v);
+      } catch {
+        return undefined;
+      }
+    }
+    const c = (v as { usage?: { cost?: unknown } } | null | undefined)?.usage?.cost;
+    return typeof c === 'number' ? c : undefined;
+  };
+  const fromJson = usageCost(response.json);
+  if (fromJson !== undefined) return fromJson;
+  for (const event of [...(response.stream ?? [])].reverse()) {
+    const c = usageCost(event);
+    if (c !== undefined) return c;
+  }
+  return undefined;
 }
 
 function syntheticGeneration(): FakeGeneration {

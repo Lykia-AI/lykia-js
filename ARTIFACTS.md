@@ -1,4 +1,4 @@
-# Single-file artifacts (@lykia/sdk 0.2.1)
+# Single-file artifacts (@lykia/sdk 0.2.2)
 
 Built by `npm run build -w @lykia/sdk` (tsdown). Both are self-contained CommonJS files: no dependencies, only Node.js
 built-ins and globals (`fetch`, `FormData`, `Blob`), target Node.js >= 18. Each starts with a header comment naming the
@@ -33,11 +33,43 @@ fake.enqueue('POST /chat/completions', { stream: chatChunks({ text: 'Hi', toolCa
 await fake.close();
 ```
 
-`createFakeLykia({ strict = true, apiKey?, presets?, billingMode?, port?, videoTimeline? })` returns a Promise. Queued responses
+`createFakeLykia({ strict = true, apiKey?, presets?, presetDefaults?, billingMode?, port?, videoTimeline? })` returns a Promise. Queued responses
 (`{ status, headers, json | body | stream, done, delayMs, eventDelayMs, hang, drop, dropAfter }` or a function of the
 request) are used once, first in first out, for the first matching `"METHOD /path"` route (`:param` and `*` allowed).
 
 ## Changelog
+
+### 0.2.2
+
+Follows the gateway changes of 2026-11-24. Only one item can change an existing test (fake records, first below).
+
+**Fake server**
+- **Generation records carry exactly the cost the client saw** (`X-Lykia-Cost`, else `usage.cost` of the JSON body,
+  else of the last stream chunk that has one; 0 when none was sent). 0.2.1 wrote a fixed 0.000123 for speech
+  (whose `X-Lykia-Cost` differed) and for streams scripted with their own usage. A test that pinned 0.000123 on those
+  records needs the real value. A test checks record = client cost for chat (JSON, stream, scripted stream, queued),
+  embeddings, images, speech, transcription and video.
+- `chatChunks({ cost })`: shorthand for `usage: fakeUsage({ cost })`.
+- Speech: `voice` falls back to the preset's default voice, set with the new option
+  `presetDefaults: { tts: { voice: '…' } }` (default none); without either, 400 `bad_request` with `param: "voice"`,
+  as the gateway. Responses carry `X-Lykia-Model` and `X-Lykia-Provider`.
+- `GET /audio/voices` has a top-level `provider`.
+- Video prompt `#output-unavailable`: the job completes (billed) with `output: null` and
+  `error { code: "video_output_unavailable", reason: "provider_error", retryable }`; content / contentUrl answer 502
+  `video_output_unavailable` (`metadata.provider`). 410 `video_expired` stays for `#expired` (real expiry).
+
+**Client**
+- `audio.speech()` result (and every binary result) gains `model` and `provider` from `X-Lykia-Model` /
+  `X-Lykia-Provider` (`undefined` where an endpoint does not send them).
+- `SpeechCreateParams.voice` doc: the gateway now applies the preset's `defaults.voice`; 400 `param: voice` only when
+  neither the request nor the preset gives one. The 0.2.0 "pass `voice` explicitly" note is removed.
+- `VideoJob.output` can be `null` for a completed job whose file could not be retrieved; `VideoJob.error.code`
+  includes `video_output_unavailable` and `error.retryable`. `VoiceList.provider`.
+- README: `video_output_unavailable` (502) in the error table and the video section; 410 `video_expired` only after
+  real expiry; speech `model` / `provider`; the fake's `presetDefaults`, `#output-unavailable`, cost-matching records.
+
+**MCP bridge**: version bump only.
+
 
 ### 0.2.1
 

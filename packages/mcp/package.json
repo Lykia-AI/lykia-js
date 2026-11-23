@@ -1,6 +1,6 @@
 {
   "name": "@lykia/mcp",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Lykia MCP bridge: connects stdio MCP clients to Lykia's remote MCP server (images, video, speech and text from one key). Includes OAuth login and local file tools.",
   "license": "ISC",
   "homepage": "https://getlykia.com",

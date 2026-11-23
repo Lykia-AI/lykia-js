@@ -375,6 +375,8 @@ export class HttpCore {
         contentType: open.response.headers.get('content-type') ?? 'application/octet-stream',
         generationId: open.meta.generationId,
         cost: costFrom(open.response.headers),
+        model: open.response.headers.get('x-lykia-model') ?? undefined,
+        provider: open.response.headers.get('x-lykia-provider') ?? undefined,
         _meta: open.meta,
       };
     } finally {

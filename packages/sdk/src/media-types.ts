@@ -30,6 +30,10 @@ export interface BinaryResult {
   generationId: string | undefined;
   /** `X-Lykia-Cost`: what the request cost in USD. */
   cost: number | undefined;
+  /** `X-Lykia-Model`: the model that served the request (speech; a preset resolves to a concrete model). */
+  model: string | undefined;
+  /** `X-Lykia-Provider`: the provider that served the request (speech). */
+  provider: string | undefined;
   _meta: ResponseMeta;
 }
 
@@ -166,12 +170,22 @@ export interface VideoJob {
   /** Seconds of video, once completed. */
   duration_seconds: number | null;
   params?: Record<string, unknown>;
-  /** Only for failed or cancelled jobs. */
-  error?: { message: string; code: string; reason?: string; billed_by_provider?: boolean; [key: string]: unknown };
+  /**
+   * For failed or cancelled jobs, and for a completed job whose output could not be stored (`output: null`,
+   * code `video_output_unavailable`, reason `provider_error`; `content` then answers 502 with that code).
+   */
+  error?: {
+    message: string;
+    code: 'video_output_unavailable' | (string & {});
+    reason?: string;
+    retryable?: boolean;
+    billed_by_provider?: boolean;
+    [key: string]: unknown;
+  };
   /** In a final state. */
   usage?: MediaUsage;
-  /** Once completed. */
-  output?: VideoOutput;
+  /** Once completed; `null` when the completed output could not be stored (see `error`). */
+  output?: VideoOutput | null;
   /** Present on the result of `videos.create`. */
   _meta?: ResponseMeta;
   [key: string]: unknown;
@@ -218,10 +232,8 @@ export interface SpeechCreateParams extends RequestTags {
   model: ModelId;
   input: string;
   /**
-   * A preset voice id or one of this project's clones (`lvc_…`). Optional in the type because a `@tts` preset can
-   * carry a default voice (`defaults.voice`). Without any voice the request is 400 `bad_request` (`param: "voice"`).
-   * Note: the gateway checked for this release still answers that 400 when the voice comes only from the preset's
-   * defaults; pass `voice` explicitly until that is fixed.
+   * A preset voice id or one of this project's clones (`lvc_…`). Optional: without it the gateway uses the preset's
+   * default voice (`defaults.voice` of a `@tts` preset). When neither gives one: 400 `bad_request` (`param: "voice"`).
    */
   voice?: string;
   response_format?: 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm';
@@ -257,6 +269,8 @@ export interface VoiceList {
   object: 'list';
   /** The model the list is for. */
   model: string;
+  /** The provider of that model. */
+  provider: string;
   data: Voice[];
 }
 

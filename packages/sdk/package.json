@@ -1,6 +1,6 @@
 {
   "name": "@lykia/sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Thin, dependency-free TypeScript client for the Lykia API (/v1): one key for every AI model. Chat with streaming, models, credits, images, video and speech.",
   "license": "ISC",
   "homepage": "https://getlykia.com",

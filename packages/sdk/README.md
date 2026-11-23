@@ -147,16 +147,20 @@ await lykia.videos.cancel(otherJob.id);                              // queued /
 Statuses: `queued` → `in_progress` → `completed` | `failed` | `cancelled`. `videos.wait` resolves on `completed` and
 throws a `LykiaError` with `code: 'video_failed'` or `'video_cancelled'` (the job is the error's `body`, its `error`
 the `metadata`), or `code: 'timeout'` (retryable; the job keeps running, call `wait` again). Before completion
-`content` / `contentUrl` answer 409 `video_not_ready`; after the retention period (or when the file can no longer be
-fetched) 410 `video_expired`. Poll every few seconds: each poll is a cheap read, and the server caps a job at 60 minutes.
+`content` / `contentUrl` answer 409 `video_not_ready`; only after the retention period (`expires_at`) 410
+`video_expired`. A job that completed but whose file could not be retrieved from the provider stays `completed` (and
+billed) with `output: null` and `error: { code: 'video_output_unavailable', reason: 'provider_error', retryable }`;
+`content` / `contentUrl` then answer 502 `video_output_unavailable` (when `retryable` is true, a content read retries
+the copy once). Check `done.output` before using it. Poll every few seconds: each poll is a cheap read, and the server caps a job at 60 minutes.
 
 ### Speech and voices
 
 ```ts
 const speech = await lykia.audio.speech({ model: '@tts', input: 'Merhaba dünya', voice: 'JBFqnCBsd6RMkjVDRZzb', response_format: 'mp3' });
 speech.data;               // Uint8Array; speech.contentType 'audio/mpeg'; speech.cost (X-Lykia-Cost)
+speech.model;              // the model that served it (X-Lykia-Model; a preset resolves to a concrete model), speech.provider
 
-const voices = await lykia.audio.voices.list();       // { model, data: [{ id, name, category: 'premade' | 'cloned', language, labels, … }] }
+const voices = await lykia.audio.voices.list();       // { model, provider, data: [{ id, name, category: 'premade' | 'cloned', language, labels, … }] }
 const clone = await lykia.audio.voices.create({
   model: voices.model,
   name: 'Narrator',
@@ -167,9 +171,9 @@ await lykia.audio.speech({ model: '@tts', input: 'Hello', voice: clone.id });
 await lykia.audio.voices.delete(clone.id);            // 404 voice_not_found when it does not exist
 ```
 
-**Voice.** `voice` is optional in the type because a `@tts` preset can carry a default voice (`defaults.voice`). A
-request with no voice at all is 400 `bad_request` (`error.param: 'voice'`). The gateway checked for this release still
-answers that 400 when the voice comes only from the preset's defaults, so pass `voice` explicitly for now.
+**Voice.** `voice` is optional: without it the gateway uses the preset's default voice (`defaults.voice` of the `@tts`
+preset you call). When neither the request nor the preset gives one, the request is 400 `bad_request`
+(`error.param: 'voice'`).
 
 **Voice-clone consent.** `consent: true` states that you have the speaker's permission to clone their voice; it is
 written to Lykia's audit log with your key and project. Without it the request is 400 `consent_required`
@@ -351,9 +355,10 @@ Codes you will meet (non-exhaustive; branch on `reason` for classes, on `code` f
 | 403 | `byok_only_no_key` | the project allows only its own provider keys and none fits (`reason: no_provider`) |
 | 404 | `not_found`, `voice_not_found` | unknown generation / video job / voice |
 | 409 | `video_not_ready`, `job_not_cancellable` | content before completion; cancel after a final state |
-| 410 | `video_expired` | the stored video is no longer available |
+| 410 | `video_expired` | the stored video passed its retention period (`expires_at`) |
 | 413 | `payload_too_large` | upload over the limit (25 MB for transcription) |
 | 429 | `rate_limited`, `provider_busy`, `media_queue_full` | rate limit; provider concurrency full (`Retry-After: 5`); too many queued media jobs in the project (`Retry-After: 30`) |
+| 502 | `video_output_unavailable` | the video was generated (and billed) but its file could not be retrieved; the job shows `output: null` + `error` |
 | 502 / 503 / 504 | `provider_error`, `no_provider`, `gateway_timeout` | provider failure; no provider available; timeout |
 | – | `video_failed`, `video_cancelled` | thrown by `videos.wait` (status 0; the job in `body`) |
 
@@ -433,7 +438,7 @@ fake.enqueue('POST /chat/completions', { stream: chatChunks({ text: 'Hi', toolCa
 await fake.close();
 ```
 
-`createFakeLykia({ strict = true, apiKey?, presets?, billingMode?, port?, videoTimeline? })`. The fake answers with
+`createFakeLykia({ strict = true, apiKey?, presets?, presetDefaults?, billingMode?, port?, videoTimeline? })`. The fake answers with
 the gateway's field names, statuses, error `type` / `code` / `metadata.param` and headers (`X-Generation-Id`,
 `X-Lykia-Preset`, `X-Lykia-Cost`, `X-Lykia-Ignored-Fields`).
 
@@ -461,7 +466,16 @@ by their `X-Generation-Id` (`GET /generation`, `GET /generations`), `billingMode
 **Video jobs follow a clock**: `queued` for `videoTimeline.queuedMs` (default 100), `in_progress` with rising
 `progress` for `runningMs` (default 300), then `completed` with a signed output link; `cancel` works while the job runs.
 Script outcomes through the prompt: a prompt containing `#fail` ends `failed` (cost 0), `#expired` completes but its
-content answers 410 `video_expired`.
+content answers 410 `video_expired`, `#output-unavailable` completes (billed) with `output: null` + `error.code:
+'video_output_unavailable'` and its content answers 502 with that code.
+
+**Speech voice**: like the gateway, a missing `voice` falls back to the preset's default voice, which you give with
+`createFakeLykia({ presetDefaults: { tts: { voice: 'JBFqnCBsd6RMkjVDRZzb' } } })` (default: none, so a request without
+`voice` is 400 `bad_request`, `param: 'voice'`). Speech responses carry `X-Lykia-Model` / `X-Lykia-Provider`.
+
+**Generation records match what the client saw**: each record's `cost` is the cost the response reported
+(`X-Lykia-Cost`, else `usage.cost` of the JSON body or of the last stream chunk that has one; 0 when none was sent).
+Script a stream's cost with `chatChunks({ text, cost: 0.42 })` (or `usage: fakeUsage({ cost })`).
 
 Queued responses can simulate failures: `{ drop: 'before-headers' }`, `{ stream, drop: 'mid-body', dropAfter: 2 }`,
 `{ delayMs }` (slow first byte), `{ hang: true }`, and `chatChunks({ error })` for a mid-stream error:

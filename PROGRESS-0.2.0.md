@@ -70,3 +70,9 @@ Load rule: one heavy command at a time; stop backend + mongod right after a chec
 - [x] `createAiSdkFetch({ context })` captured per request at start; `info.context` + `info.tags` in onResult; `onError(err, { url, context, tags, generationId })`
 - [x] tests `packages/sdk/test/release-0.2.1.test.ts` (6): abort from another context, AI SDK abortSignal, 2 concurrent streams, non-stream, HTTP + mid-stream errors, throwing context
 - [x] README per-request section rewritten; ARTIFACTS 0.2.1 entry; both packages 0.2.1; npm run check exit 0 (139 passed / 13 skipped)
+
+## 0.2.2 (coordinator follow-up)
+- [x] fake records cost = what was sent (sentCost: X-Lykia-Cost > JSON usage.cost > last stream usage.cost; else 0); chatChunks({ cost })
+- [x] speech X-Lykia-Model/Provider → BinaryResult.model/provider; preset default voice (fake option presetDefaults); voices list provider
+- [x] video `#output-unavailable`: completed, output null, error video_output_unavailable; content 502
+- [x] tests release-0.2.2.test.ts (8); README + ARTIFACTS; 0.2.2; npm run check exit 0 (147 passed / 13 skipped). No real-backend run (load).
