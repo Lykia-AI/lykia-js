@@ -29,3 +29,20 @@ Build first (`npm run build`): the MCP suite runs the built `lykia-mcp`.
 
 Lykia için JavaScript paketleri: `@lykia/sdk` (`/v1` istemcisi) ve `@lykia/mcp` (MCP istemcileri için köprü).
 Geliştirme: `npm install`, `npm run check`. Yayın adımları `PUBLISHING.md` dosyasındadır.
+
+## Şirket bilgileri (yasal)
+
+```
+AKSUNGUR SOFTWARE LLC
+FEI/EIN Number: 30-1281565
+7901 4TH ST N, STE 300
+ST. PETERSBURG, FL 33702, USA
+Telefon: +90 850 305 17 32
+E-posta: info@getlykia.com
+```
+
+Aksion hariç tüm Aksungur ürünleri AKSUNGUR SOFTWARE LLC (ABD) adına işletilir (26 Kasım 2026).
+
+Kodda nerede durur: bu depoda şirket künyesi yoktur (paketler yalnız marka adını ve `https://getlykia.com` adresini
+taşır; `packages/*/package.json` → `homepage`, `packages/*/LICENSE` → `Copyright (c) 2026 Lykia`). Künyenin tek kaynağı
+`../lykia-frontend/components/site/company.ts` ve `../lykia-backend/app/src/company.ts`'tir.
